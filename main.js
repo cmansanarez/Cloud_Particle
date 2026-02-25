@@ -1,5 +1,70 @@
 // main.js
 
+// ─── Sky palette ───────────────────────────────────────────────────────────────
+// Keyframes keyed by fractional local hour. Each entry:
+//   top/mid/hor   [r,g,b]  linear sky gradient: zenith → mid-sky → horizon
+//   glow          0–1      opacity of sun radial overlay (only while sun is above horizon)
+//   glowC         [r,g,b]  sun glow colour
+//   cShadow/cLight[r,g,b]  cloud particle shadow / highlight colour endpoints
+//   aMult         0–1      cloud alpha multiplier (0 = clouds invisible)
+const SKY_KEYFRAMES = [
+  { h:  0.0, top:[  0,  2, 14], mid:[  1,  4, 22], hor:[  2,  6, 32], glow:0,    glowC:[255,140, 60], cShadow:[ 20, 25, 55], cLight:[ 45, 55, 90], aMult:0.25 },
+  { h:  4.5, top:[  4,  8, 40], mid:[ 12, 18, 62], hor:[ 28, 22, 75], glow:0,    glowC:[200,120, 80], cShadow:[ 40, 45, 90], cLight:[ 80, 90,140], aMult:0.40 },
+  { h:  5.5, top:[ 10, 24, 80], mid:[ 38, 60,140], hor:[105, 72,128], glow:0,    glowC:[255,160, 80], cShadow:[140,120,165], cLight:[210,190,230], aMult:0.65 },
+  { h:  6.5, top:[ 22, 58,135], mid:[215,115, 60], hor:[255,190, 80], glow:0.30, glowC:[255,225,120], cShadow:[205,145,105], cLight:[255,235,200], aMult:0.90 },
+  { h:  7.5, top:[ 26, 88,168], mid:[132,198,248], hor:[255,218,168], glow:0.18, glowC:[255,242,185], cShadow:[200,218,242], cLight:[255,255,255], aMult:1.00 },
+  { h: 10.0, top:[ 28,100,190], mid:[120,195,248], hor:[188,225,255], glow:0.12, glowC:[255,252,215], cShadow:[200,218,242], cLight:[255,255,255], aMult:1.00 },
+  { h: 16.0, top:[ 28,100,190], mid:[120,195,248], hor:[188,225,255], glow:0.12, glowC:[255,252,215], cShadow:[200,218,242], cLight:[255,255,255], aMult:1.00 },
+  { h: 17.5, top:[ 22, 68,158], mid:[168,132,195], hor:[255,188,128], glow:0.22, glowC:[255,200,100], cShadow:[205,165,145], cLight:[255,242,222], aMult:1.00 },
+  { h: 18.5, top:[ 15, 30, 98], mid:[188, 68, 68], hor:[255,148, 68], glow:0.34, glowC:[255,162, 62], cShadow:[205,125, 85], cLight:[255,205,165], aMult:0.90 },
+  { h: 19.5, top:[  8, 14, 55], mid:[ 65, 25, 75], hor:[128, 55, 85], glow:0,    glowC:[255,120, 80], cShadow:[ 95, 75,118], cLight:[162,132,175], aMult:0.55 },
+  { h: 20.5, top:[  3,  5, 32], mid:[ 10, 10, 44], hor:[ 20, 15, 54], glow:0,    glowC:[255,100, 60], cShadow:[ 45, 48, 88], cLight:[ 78, 82,132], aMult:0.30 },
+  { h: 21.5, top:[  0,  2, 14], mid:[  1,  4, 22], hor:[  2,  6, 32], glow:0,    glowC:[255,140, 60], cShadow:[ 20, 25, 55], cLight:[ 45, 55, 90], aMult:0.25 },
+  { h: 24.0, top:[  0,  2, 14], mid:[  1,  4, 22], hor:[  2,  6, 32], glow:0,    glowC:[255,140, 60], cShadow:[ 20, 25, 55], cLight:[ 45, 55, 90], aMult:0.25 },
+];
+
+// Interpolate sky colours for the given Date
+function getSkyColors(date) {
+  const h = date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600;
+
+  // Find the surrounding keyframe pair
+  let i = SKY_KEYFRAMES.length - 2;
+  for (let k = 0; k < SKY_KEYFRAMES.length - 1; k++) {
+    if (h < SKY_KEYFRAMES[k + 1].h) { i = k; break; }
+  }
+
+  const a = SKY_KEYFRAMES[i], b = SKY_KEYFRAMES[i + 1];
+  const t = (h - a.h) / (b.h - a.h);
+  const lerpC = (ca, cb, t) => ca.map((v, j) => Math.round(lerp(v, cb[j], t)));
+
+  return {
+    top:     lerpC(a.top,     b.top,     t),
+    mid:     lerpC(a.mid,     b.mid,     t),
+    hor:     lerpC(a.hor,     b.hor,     t),
+    glow:    lerp(a.glow,     b.glow,    t),
+    glowC:   lerpC(a.glowC,   b.glowC,   t),
+    cShadow: lerpC(a.cShadow, b.cShadow, t),
+    cLight:  lerpC(a.cLight,  b.cLight,  t),
+    aMult:   lerp(a.aMult,    b.aMult,   t),
+    hour: h,
+  };
+}
+
+// Sun disc position in canvas coords, arcing east→west. Returns null below horizon.
+function getSunPosition(hour, w, h) {
+  const riseH = 6.3, setH = 18.7;
+  if (hour < riseH || hour > setH) return null;
+  const t    = (hour - riseH) / (setH - riseH);   // 0 = sunrise, 1 = sunset
+  const elev = Math.sin(t * Math.PI);              // elevation fraction 0 → 1 → 0
+  return {
+    x: w * (0.05 + 0.90 * t),                     // east → west
+    y: h * (1.0 - elev * 0.80),                   // horizon → upper sky → horizon
+    r: Math.min(w, h) * (0.30 + 0.25 * (1 - elev)), // larger glow near horizon
+  };
+}
+
+// ─── Perlin noise ──────────────────────────────────────────────────────────────
+
 // Tiny Perlin noise (2D) implementation (public-domain style, based on classic improved Perlin noise patterns)
 class Perlin {
   constructor(seed = Math.random()) {
@@ -128,19 +193,21 @@ class CloudParticle {
     }
   }
 
-  draw(ctx) {
-    // Per-particle color: slow noise drives a lerp from cool blue-grey shadow to bright white.
+  // skyColors is the current interpolated palette from getSkyColors()
+  draw(ctx, skyColors) {
+    // Per-particle colour: slow noise lerps between the time-of-day shadow/light endpoints.
     // Gives each cloud internal light/shadow variation without flickering.
     const shadeNoise = this.perlin.noise2D(
       this.noiseOffsetX * this.opts.noiseScale * 0.4 + 300,
       this.noiseOffsetY * this.opts.noiseScale * 0.4 + 300
     );
-    const cr = Math.round(lerp(200, 255, shadeNoise));
-    const cg = Math.round(lerp(218, 255, shadeNoise));
-    const cb = Math.round(lerp(242, 255, shadeNoise));
+    const cr = Math.round(lerp(skyColors.cShadow[0], skyColors.cLight[0], shadeNoise));
+    const cg = Math.round(lerp(skyColors.cShadow[1], skyColors.cLight[1], shadeNoise));
+    const cb = Math.round(lerp(skyColors.cShadow[2], skyColors.cLight[2], shadeNoise));
     ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
 
-    ctx.globalAlpha = this._displayAlpha / 255;
+    // Scale alpha by time-of-day multiplier so clouds dim at night
+    ctx.globalAlpha = (this._displayAlpha / 255) * skyColors.aMult;
 
     // Circle instead of square — reads as a soft round puff
     ctx.beginPath();
@@ -188,6 +255,10 @@ class CloudSystem {
     this.lastT = null;      // null until first frame so dt is always clean
     this._rafId = null;
     this._resizeTimer = null;
+    this._lastColorMs = null;
+
+    // Compute initial sky palette before resize() so _buildGradients() has colours
+    this._skyColors = getSkyColors(new Date());
 
     this.resize();
     this.initParticles();
@@ -210,33 +281,44 @@ class CloudSystem {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
     } else {
-      this.lastT = null; // reset timing to avoid a large dt spike on resume
+      this.lastT = null;       // reset timing to avoid a large dt spike on resume
+      this._lastColorMs = null; // force colour refresh on resume
       this._rafId = requestAnimationFrame((t) => this.loop(t));
     }
   }
 
-  // Build (or rebuild on resize) the cached sky and sun gradient objects.
-  // Both are drawn each frame in fadeBackground() at fadeAlpha, so the canvas
-  // naturally converges to the combined appearance of sky + sun warmth at equilibrium.
+  // Build (or rebuild) the cached sky gradient and optional sun glow gradient.
+  // Uses this._skyColors so call getSkyColors() before calling this.
   _buildGradients() {
     const { ctx, w, h } = this;
+    const sc = this._skyColors;
 
-    // Sky: deep azure at zenith transitions down to pale near the horizon
+    // Sky: zenith colour transitions down through mid-sky to the horizon
     const sky = ctx.createLinearGradient(0, 0, 0, h);
-    sky.addColorStop(0,   'rgb(28, 100, 190)');
-    sky.addColorStop(0.5, 'rgb(120, 195, 248)');
-    sky.addColorStop(1.0, 'rgb(188, 225, 255)');
+    sky.addColorStop(0,   `rgb(${sc.top.join(',')})`);
+    sky.addColorStop(0.5, `rgb(${sc.mid.join(',')})`);
+    sky.addColorStop(1.0, `rgb(${sc.hor.join(',')})`);
     this._skyGrad = sky;
 
-    // Sun warmth: soft radial glow anchored in the upper-right.
-    // Drawn alongside the sky fade each frame so the canvas settles at a sky
-    // that has the warmth permanently baked into the equilibrium state.
-    const sx = w * 0.82, sy = h * 0.08, sr = Math.min(w, h) * 0.55;
-    const sun = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
-    sun.addColorStop(0,   'rgba(255, 252, 215, 0.18)');
-    sun.addColorStop(0.4, 'rgba(255, 242, 185, 0.06)');
-    sun.addColorStop(1.0, 'rgba(255, 240, 160, 0)');
-    this._sunGrad = sun;
+    // Sun/glow: radial overlay whose position arcs across the sky through the day.
+    // Only present when the sun is above the horizon and glow > 0.
+    this._sunGrad = null;
+    if (sc.glow > 0) {
+      const sunPos = getSunPosition(sc.hour, w, h);
+      if (sunPos) {
+        const [gr, gg, gb] = sc.glowC;
+        const { x: sx, y: sy, r: sr } = sunPos;
+        const sun = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+        sun.addColorStop(0,   `rgba(${gr},${gg},${gb},${(sc.glow * 0.85).toFixed(3)})`);
+        sun.addColorStop(0.4, `rgba(${gr},${gg},${gb},${(sc.glow * 0.25).toFixed(3)})`);
+        sun.addColorStop(1.0, `rgba(${gr},${gg},${gb},0)`);
+        this._sunGrad = sun;
+      }
+    }
+
+    // Keep body background in sync so there's no colour flash before the canvas paints
+    const [r, g, b] = sc.top;
+    document.body.style.background = `rgb(${r},${g},${b})`;
   }
 
   resize() {
@@ -253,8 +335,10 @@ class CloudSystem {
     // Resizing the canvas clears it — immediately repaint the sky
     this.ctx.fillStyle = this._skyGrad;
     this.ctx.fillRect(0, 0, this.w, this.h);
-    this.ctx.fillStyle = this._sunGrad;
-    this.ctx.fillRect(0, 0, this.w, this.h);
+    if (this._sunGrad) {
+      this.ctx.fillStyle = this._sunGrad;
+      this.ctx.fillRect(0, 0, this.w, this.h);
+    }
 
     for (const p of this.particles) p.resize(this.w, this.h);
   }
@@ -314,18 +398,21 @@ class CloudSystem {
     // Initial sky fill
     this.ctx.fillStyle = this._skyGrad;
     this.ctx.fillRect(0, 0, this.w, this.h);
-    this.ctx.fillStyle = this._sunGrad;
-    this.ctx.fillRect(0, 0, this.w, this.h);
+    if (this._sunGrad) {
+      this.ctx.fillStyle = this._sunGrad;
+      this.ctx.fillRect(0, 0, this.w, this.h);
+    }
   }
 
   fadeBackground() {
     this.ctx.save();
     this.ctx.globalAlpha = this.fadeAlpha;
-    // Both gradients at the same alpha — the canvas converges to their combined appearance
     this.ctx.fillStyle = this._skyGrad;
     this.ctx.fillRect(0, 0, this.w, this.h);
-    this.ctx.fillStyle = this._sunGrad;
-    this.ctx.fillRect(0, 0, this.w, this.h);
+    if (this._sunGrad) {
+      this.ctx.fillStyle = this._sunGrad;
+      this.ctx.fillRect(0, 0, this.w, this.h);
+    }
     this.ctx.restore();
   }
 
@@ -334,12 +421,18 @@ class CloudSystem {
     const dt = Math.min(0.05, (t - this.lastT) / 1000);
     this.lastT = t;
 
+    // Refresh sky palette once per second — smooth real-time colour transitions
+    if (this._lastColorMs === null || t - this._lastColorMs >= 1000) {
+      this._skyColors = getSkyColors(new Date());
+      this._buildGradients();
+      this._lastColorMs = t;
+    }
+
     this.fadeBackground();
 
-    // fillStyle is set per-particle in draw() for color shading
     for (const p of this.particles) {
       p.update(dt);
-      p.draw(this.ctx);
+      p.draw(this.ctx, this._skyColors);
     }
 
     this._rafId = requestAnimationFrame((nt) => this.loop(nt));
