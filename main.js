@@ -145,15 +145,17 @@ class CloudParticle {
     this.noiseOffsetX = Math.random() * 1000;
     this.noiseOffsetY = Math.random() * 1000;
     this._displayAlpha = 0;
+    this._windVX = 0;
+    this._windVY = 0;
   }
 
   resize(w, h) {
     this.w = w;
     this.h = h;
-    this.skyTop = h * 0.5;
+    this.skyTop = h;
   }
 
-  update(dt) {
+  update(dt, mouse) {
     const opts = this.opts;
     const dtFactor = dt * 60;
 
@@ -179,6 +181,34 @@ class CloudParticle {
     if (this._displayAlpha < this._targetAlpha) {
       this._displayAlpha = Math.min(this._targetAlpha, this._displayAlpha + 3 * dtFactor);
     }
+
+    // Wind cursor influence: particles within radius feel a gust in the direction
+    // the mouse is moving, plus a gentle radial push away from the cursor centre.
+    // Force scales with depth so near particles scatter more than distant ones.
+    const mdx = this.x - mouse.x;
+    const mdy = this.y - mouse.y;
+    const distSq = mdx * mdx + mdy * mdy;
+    const WIND_R = 150;
+    if (distSq < WIND_R * WIND_R && distSq > 0.01) {
+      const dist = Math.sqrt(distSq);
+      const proximity = 1 - dist / WIND_R;
+      const falloff = proximity * proximity;          // quadratic: strongest at centre
+      const depthScale = 0.3 + 0.7 * this.depth;    // far particles disturbed less
+      const nx = mdx / dist;                         // radial direction (away from cursor)
+      const ny = mdy / dist;
+      const f = 1.5 * falloff * depthScale;
+      this._windVX += (mouse.vx * 0.6 + nx * 1) * f * dtFactor;
+      this._windVY += (mouse.vy * 0.6 + ny * 1) * f * dtFactor;
+    }
+
+    // Apply wind velocity and let it decay naturally
+    this.x += this._windVX * dtFactor;
+    this.y += this._windVY * dtFactor;
+    this._windVX *= 0.90;
+    this._windVY *= 0.90;
+    // Soft speed cap so particles never fly fully off screen
+    if (Math.abs(this._windVX) > 4) this._windVX *= 0.75;
+    if (Math.abs(this._windVY) > 4) this._windVY *= 0.75;
 
     // Horizontal wrap
     if (this.x > this.w + this.size) {
@@ -257,11 +287,16 @@ class CloudSystem {
     this._resizeTimer = null;
     this._lastColorMs = null;
 
+    // Mouse/wind state: position far off-canvas so no force is applied until
+    // the cursor actually enters. vx/vy are smoothed per-event and decay per-frame.
+    this._mouse = { x: -9999, y: -9999, vx: 0, vy: 0 };
+
     // Compute initial sky palette before resize() so _buildGradients() has colours
     this._skyColors = getSkyColors(new Date());
 
     this.resize();
     this.initParticles();
+    this._bindMouse();
 
     window.addEventListener("resize", () => this._onResize());
     document.addEventListener("visibilitychange", () => this._onVisibility());
@@ -285,6 +320,52 @@ class CloudSystem {
       this._lastColorMs = null; // force colour refresh on resume
       this._rafId = requestAnimationFrame((t) => this.loop(t));
     }
+  }
+
+  _bindMouse() {
+    // Shared helper: update _mouse from any (x, y) in canvas-local coords
+    const move = (x, y) => {
+      const rawVX = x - this._mouse.x;
+      const rawVY = y - this._mouse.y;
+      this._mouse.vx = this._mouse.vx * 0.5 + rawVX * 0.5;
+      this._mouse.vy = this._mouse.vy * 0.5 + rawVY * 0.5;
+      this._mouse.x = x;
+      this._mouse.y = y;
+    };
+
+    const park = () => {
+      this._mouse.x  = -9999;
+      this._mouse.y  = -9999;
+      this._mouse.vx = 0;
+      this._mouse.vy = 0;
+    };
+
+    // ── Mouse ──────────────────────────────────────────────────────────────
+    this.canvas.addEventListener('mousemove', e => {
+      const rect = this.canvas.getBoundingClientRect();
+      move(e.clientX - rect.left, e.clientY - rect.top);
+    });
+    this.canvas.addEventListener('mouseleave', park);
+
+    // ── Touch ──────────────────────────────────────────────────────────────
+    // touchstart: seed position so the first touchmove delta isn't huge
+    this.canvas.addEventListener('touchstart', e => {
+      const rect = this.canvas.getBoundingClientRect();
+      const t = e.touches[0];
+      this._mouse.x = t.clientX - rect.left;
+      this._mouse.y = t.clientY - rect.top;
+    }, { passive: true });
+
+    // touchmove: same velocity logic as mousemove; preventDefault stops page scroll
+    this.canvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      const rect = this.canvas.getBoundingClientRect();
+      const t = e.touches[0];
+      move(t.clientX - rect.left, t.clientY - rect.top);
+    }, { passive: false });
+
+    this.canvas.addEventListener('touchend',   park);
+    this.canvas.addEventListener('touchcancel', park);
   }
 
   // Build (or rebuild) the cached sky gradient and optional sun glow gradient.
@@ -350,7 +431,7 @@ class CloudSystem {
       perlin: this.perlin,
       width: this.w,
       height: this.h,
-      skyTop: this.h * 0.5,
+      skyTop: this.h,
 
       // size is now a circle radius
       sizeMin: 2,
@@ -374,7 +455,7 @@ class CloudSystem {
     const numClusters = 5;
     const clusters = Array.from({ length: numClusters }, () => ({
       cx: randRange(this.w * 0.05, this.w * 0.95),
-      cy: randRange(this.h * 0.05, this.h * 0.42),
+      cy: randRange(this.h * 0.05, this.h * 0.95),
       rx: randRange(this.w * 0.07, this.w * 0.17), // horizontal spread
       ry: randRange(this.h * 0.03, this.h * 0.10), // vertical spread (flatter)
     }));
@@ -387,7 +468,7 @@ class CloudSystem {
       const y = cl.cy + Math.sin(angle) * r * cl.ry;
       this.particles.push(new CloudParticle(
         Math.max(-50, Math.min(this.w + 50, x)),
-        Math.max(0, Math.min(this.h * 0.5, y)),
+        Math.max(0, Math.min(this.h, y)),
         opts
       ));
     }
@@ -430,8 +511,12 @@ class CloudSystem {
 
     this.fadeBackground();
 
+    // Decay mouse velocity each frame so the wind gust fades when the cursor stops
+    this._mouse.vx *= 0.80;
+    this._mouse.vy *= 0.80;
+
     for (const p of this.particles) {
-      p.update(dt);
+      p.update(dt, this._mouse);
       p.draw(this.ctx, this._skyColors);
     }
 
