@@ -310,6 +310,7 @@ class CloudSystem {
     this._rafId = null;
     this._resizeTimer = null;
     this._lastColorMs = null;
+    this._stars = [];
 
     // Mouse/wind state: position far off-canvas so no force is applied until
     // the cursor actually enters. vx/vy are smoothed per-event and decay per-frame.
@@ -392,6 +393,10 @@ class CloudSystem {
     this.canvas.addEventListener('touchcancel', park);
   }
 
+  _initStars() {
+    this._stars = generateStars(this.w, this.h);
+  }
+
   // Build (or rebuild) the cached sky gradient and optional sun glow gradient.
   // Uses this._skyColors so call getSkyColors() before calling this.
   _buildGradients() {
@@ -445,6 +450,7 @@ class CloudSystem {
       this.ctx.fillRect(0, 0, this.w, this.h);
     }
 
+    this._initStars();
     for (const p of this.particles) p.resize(this.w, this.h);
   }
 
@@ -534,6 +540,7 @@ class CloudSystem {
     }
 
     this.fadeBackground();
+    drawStars(this.ctx, this._stars, this._skyColors, t, this.perlin);
 
     // Decay mouse velocity each frame so the wind gust fades when the cursor stops
     this._mouse.vx *= 0.80;
@@ -554,6 +561,103 @@ function randRange(a, b) {
 
 function lerp(a, b, t) {
   return a + t * (b - a);
+}
+
+// ─── Star field ─────────────────────────────────────────────────────────────
+
+// Build a fixed array of star descriptors sized to fill the canvas.
+// Each star stores its position, shape (jittered polar vertices), per-point
+// radii, and independent Perlin offsets so every star twinkles at its own rate.
+function generateStars(w, h, count = 150) {
+  const stars = [];
+  for (let i = 0; i < count; i++) {
+    const numPoints = Math.floor(randRange(3, 6.99)); // 3–6 spikes
+
+    // Slightly jittered evenly-spaced angles → organic asymmetry
+    const angles = [];
+    for (let j = 0; j < numPoints; j++) {
+      angles.push((j / numPoints) * Math.PI * 2 + randRange(-0.18, 0.18));
+    }
+    angles.sort((a, b) => a - b);
+
+    // 15% chance of a larger "prominent" star; rest are typical background stars
+    const outerR = Math.random() < 0.15
+      ? randRange(3.5, 5.5)
+      : randRange(0.8, 2.8);
+    const innerR = outerR * randRange(0.28, 0.46);
+
+    stars.push({
+      x: Math.random() * w,
+      y: Math.random() * h,
+      numPoints,
+      angles,
+      radii:       angles.map(() => outerR * randRange(0.84, 1.16)), // per-spike asymmetry
+      innerR,
+      brightness:  Math.pow(Math.random(), 1.4), // most stars dim, a few bright
+      noiseOff:    Math.random() * 500,           // overall twinkle offset
+      noiseOffPts: angles.map(() => Math.random() * 1000), // per-spike twinkle
+      twinkleSpeed: randRange(0.04, 0.14),
+    });
+  }
+  return stars;
+}
+
+// Draw the star field. Stars are fully visible in true night (aMult ≈ 0.25) and
+// fade out as the sky brightens through twilight (gone by aMult ≈ 0.65).
+function drawStars(ctx, stars, skyColors, t, perlin) {
+  const nightness = Math.max(0, Math.min(1, 1 - (skyColors.aMult - 0.25) / 0.40));
+  if (nightness < 0.01) return;
+
+  const noiseT = t * 0.0003; // very slow time so twinkle is subtle
+
+  for (const star of stars) {
+    const { x, y, numPoints, angles, radii, innerR,
+            brightness, noiseOff, noiseOffPts, twinkleSpeed } = star;
+
+    // Per-star brightness pulse drives overall opacity
+    const pulse = perlin.noise2D(noiseOff, noiseT * twinkleSpeed);
+    const alpha = nightness * brightness * (0.55 + 0.45 * pulse);
+    if (alpha < 0.015) continue;
+
+    // Build interleaved outer-spike / inner-valley vertex array
+    const verts = [];
+    for (let i = 0; i < numPoints; i++) {
+      // Per-spike radius modulation: independent noise gives shape flicker
+      const ptPulse = perlin.noise2D(noiseOffPts[i], noiseT * twinkleSpeed * 0.55);
+      const r = radii[i] * (0.82 + 0.18 * ptPulse);
+      verts.push({ x: Math.cos(angles[i]) * r, y: Math.sin(angles[i]) * r });
+
+      // Valley: midpoint angle between this and next spike, at inner radius
+      const nextAngle = i < numPoints - 1 ? angles[i + 1] : angles[0] + Math.PI * 2;
+      const midAngle  = (angles[i] + nextAngle) / 2;
+      verts.push({ x: Math.cos(midAngle) * innerR, y: Math.sin(midAngle) * innerR });
+    }
+
+    const total = verts.length; // numPoints * 2
+
+    ctx.save();
+    ctx.translate(x, y);
+
+    // Glow halo — size scales with the star's radius; pulses with brightness
+    ctx.shadowBlur  = (3 + pulse * 7) * (radii[0] / 1.8);
+    ctx.shadowColor = `rgba(210, 228, 255, ${(alpha * 0.85).toFixed(3)})`;
+
+    // Smooth path: midpoint quadratic bezier rounds every sharp vertex into a
+    // soft arc, producing a luminous organic shape rather than a rigid polygon.
+    ctx.beginPath();
+    const last = verts[total - 1];
+    ctx.moveTo((last.x + verts[0].x) / 2, (last.y + verts[0].y) / 2);
+    for (let i = 0; i < total; i++) {
+      const curr = verts[i];
+      const next = verts[(i + 1) % total];
+      ctx.quadraticCurveTo(curr.x, curr.y, (curr.x + next.x) / 2, (curr.y + next.y) / 2);
+    }
+    ctx.closePath();
+
+    ctx.fillStyle = `rgba(220, 235, 255, ${alpha.toFixed(3)})`;
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 // Boot
