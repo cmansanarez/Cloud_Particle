@@ -57,9 +57,10 @@ function getSunPosition(hour, w, h) {
   const t    = (hour - riseH) / (setH - riseH);   // 0 = sunrise, 1 = sunset
   const elev = Math.sin(t * Math.PI);              // elevation fraction 0 → 1 → 0
   return {
-    x: w * (0.05 + 0.90 * t),                     // east → west
-    y: h * (1.0 - elev * 0.80),                   // horizon → upper sky → horizon
-    r: Math.min(w, h) * (0.30 + 0.25 * (1 - elev)), // larger glow near horizon
+    x:    w * (0.05 + 0.90 * t),
+    y:    h * (1.0 - elev * 0.80),
+    r:    Math.min(w, h) * (0.30 + 0.25 * (1 - elev)), // larger glow near horizon
+    elev,                                               // 0 = horizon, 1 = zenith
   };
 }
 
@@ -397,6 +398,12 @@ class CloudSystem {
     this._stars = generateStars(this.w, this.h);
   }
 
+  _drawSunDisc() {
+    if (!this._sunDiscGrad) return;
+    this.ctx.fillStyle = this._sunDiscGrad;
+    this.ctx.fillRect(0, 0, this.w, this.h);
+  }
+
   // Build (or rebuild) the cached sky gradient and optional sun glow gradient.
   // Uses this._skyColors so call getSkyColors() before calling this.
   _buildGradients() {
@@ -410,20 +417,35 @@ class CloudSystem {
     sky.addColorStop(1.0, `rgb(${sc.hor.join(',')})`);
     this._skyGrad = sky;
 
-    // Sun/glow: radial overlay whose position arcs across the sky through the day.
-    // Only present when the sun is above the horizon and glow > 0.
-    this._sunGrad = null;
-    if (sc.glow > 0) {
-      const sunPos = getSunPosition(sc.hour, w, h);
-      if (sunPos) {
-        const [gr, gg, gb] = sc.glowC;
-        const { x: sx, y: sy, r: sr } = sunPos;
+    // Compute sun position once; used for both the large glow overlay and the disc.
+    this._sunGrad     = null;
+    this._sunDiscGrad = null;
+    const sunPos = getSunPosition(sc.hour, w, h);
+    if (sunPos) {
+      const { x: sx, y: sy, r: sr, elev } = sunPos;
+      const [gr, gg, gb] = sc.glowC;
+
+      // Large atmospheric glow overlay (only meaningful during sunrise/sunset)
+      if (sc.glow > 0) {
         const sun = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
         sun.addColorStop(0,   `rgba(${gr},${gg},${gb},${(sc.glow * 0.85).toFixed(3)})`);
         sun.addColorStop(0.4, `rgba(${gr},${gg},${gb},${(sc.glow * 0.25).toFixed(3)})`);
         sun.addColorStop(1.0, `rgba(${gr},${gg},${gb},0)`);
         this._sunGrad = sun;
       }
+
+      // Tight sun disc: larger and warmer near the horizon (atmospheric scattering),
+      // smaller and whiter overhead. Core colour fades from glowC toward white as
+      // the sun climbs; disc radius shrinks from ~28 px at horizon to ~14 px at zenith.
+      const base   = Math.min(w, h) * 0.015;
+      const discR  = base * (0.65 + 1.35 * (1 - elev));
+      const coreB  = Math.round(180 + 75 * elev); // blue channel: warmer/lower near horizon
+      const disc   = ctx.createRadialGradient(sx, sy, 0, sx, sy, discR);
+      disc.addColorStop(0,   `rgba(255,255,${coreB},1.0)`);    // white-hot centre
+      disc.addColorStop(0.3, `rgba(${gr},${gg},${gb},0.95)`);  // transition to sky-tint colour
+      disc.addColorStop(0.8, `rgba(${gr},${gg},${gb},0.18)`);  // soft penumbra fade
+      disc.addColorStop(1.0, `rgba(${gr},${gg},${gb},0)`);
+      this._sunDiscGrad = disc;
     }
 
     // Keep body background in sync so there's no colour flash before the canvas paints
@@ -449,6 +471,7 @@ class CloudSystem {
       this.ctx.fillStyle = this._sunGrad;
       this.ctx.fillRect(0, 0, this.w, this.h);
     }
+    this._drawSunDisc();
 
     this._initStars();
     for (const p of this.particles) p.resize(this.w, this.h);
@@ -513,6 +536,7 @@ class CloudSystem {
       this.ctx.fillStyle = this._sunGrad;
       this.ctx.fillRect(0, 0, this.w, this.h);
     }
+    this._drawSunDisc();
   }
 
   fadeBackground() {
@@ -540,6 +564,7 @@ class CloudSystem {
     }
 
     this.fadeBackground();
+    this._drawSunDisc();
     drawStars(this.ctx, this._stars, this._skyColors, t, this.perlin);
 
     // Decay mouse velocity each frame so the wind gust fades when the cursor stops
