@@ -147,6 +147,11 @@ class CloudParticle {
     this._displayAlpha = 0;
     this._windVX = 0;
     this._windVY = 0;
+    // Per-particle warm/cool tint seed: positive = cooler (more blue), negative = warmer (more red)
+    this._hueShift = randRange(-8, 8);
+    // Home anchor: drifts with base speed, spring keeps particle from dispersing
+    this.homeX = x;
+    this.homeY = y;
   }
 
   resize(w, h) {
@@ -176,6 +181,13 @@ class CloudParticle {
     // Evolve Y offset at a slightly different rate for richer 2D trajectories
     this.noiseOffsetX += opts.noiseStep * dtFactor;
     this.noiseOffsetY += opts.noiseStep * 0.73 * dtFactor;
+
+    // Advance home anchor at base drift speed (no noise) so it tracks where the
+    // particle would be without turbulence. The spring below then counteracts the
+    // accumulated noise drift, keeping particles near their cluster indefinitely.
+    this.homeX += this.speedX * dtFactor;
+    this.x += (this.homeX - this.x) * 0.005 * dtFactor;
+    this.y += (this.homeY - this.y) * 0.005 * dtFactor;
 
     // Fade in toward target alpha
     if (this._displayAlpha < this._targetAlpha) {
@@ -225,27 +237,40 @@ class CloudParticle {
 
   // skyColors is the current interpolated palette from getSkyColors()
   draw(ctx, skyColors) {
-    // Per-particle colour: slow noise lerps between the time-of-day shadow/light endpoints.
-    // Gives each cloud internal light/shadow variation without flickering.
+    // Noise-driven shade: lerps between time-of-day shadow/light endpoints
     const shadeNoise = this.perlin.noise2D(
       this.noiseOffsetX * this.opts.noiseScale * 0.4 + 300,
       this.noiseOffsetY * this.opts.noiseScale * 0.4 + 300
     );
-    const cr = Math.round(lerp(skyColors.cShadow[0], skyColors.cLight[0], shadeNoise));
+    // Per-particle hue seed shifts red/blue channels for subtle warm/cool variation
+    const cr = Math.round(Math.max(0, Math.min(255, lerp(skyColors.cShadow[0], skyColors.cLight[0], shadeNoise) - this._hueShift * 0.3)));
     const cg = Math.round(lerp(skyColors.cShadow[1], skyColors.cLight[1], shadeNoise));
-    const cb = Math.round(lerp(skyColors.cShadow[2], skyColors.cLight[2], shadeNoise));
-    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+    const cb = Math.round(Math.max(0, Math.min(255, lerp(skyColors.cShadow[2], skyColors.cLight[2], shadeNoise) + this._hueShift)));
+    const alpha = (this._displayAlpha / 255) * skyColors.aMult;
 
-    // Scale alpha by time-of-day multiplier so clouds dim at night
-    ctx.globalAlpha = (this._displayAlpha / 255) * skyColors.aMult;
+    // All drawing runs inside save/restore so the ellipse transform and any
+    // shadow state are automatically cleaned up after each particle.
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.scale(1.8, 1.0); // horizontal stretch → cloud-shaped ellipse
 
-    // Circle instead of square — reads as a soft round puff
+    // Shadow blur glow: only active during sunrise/sunset (skyColors.glow > 0).
+    // Intensity scales with the sky's current glow value and particle size.
+    if (skyColors.glow > 0) {
+      ctx.shadowBlur  = skyColors.glow * this.size * 2;
+      ctx.shadowColor = `rgba(${skyColors.glowC[0]},${skyColors.glowC[1]},${skyColors.glowC[2]},0.5)`;
+    }
+
+    // Radial gradient fill: opaque at centre, fully transparent at edge
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, this.size);
+    grad.addColorStop(0,   `rgba(${cr},${cg},${cb},${alpha.toFixed(3)})`);
+    grad.addColorStop(1.0, `rgba(${cr},${cg},${cb},0)`);
+    ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+    ctx.arc(0, 0, this.size, 0, Math.PI * 2);
     ctx.fill();
 
-    // Noise-driven core density: slow-oscillating denser sub-circle
-    // Samples a separate region of noise space (+500) so it is independent from motion.
+    // Core density blob: a softer secondary puff offset from centre for internal volume
     const coreNoise = this.perlin.noise2D(
       this.noiseOffsetX * this.opts.noiseScale * 1.5 + 500,
       this.noiseOffsetY * this.opts.noiseScale * 1.5 + 500
@@ -253,18 +278,17 @@ class CloudParticle {
     if (coreNoise < this.opts.coreChance) {
       const ox = randRange(-this.opts.coreOffset, this.opts.coreOffset);
       const oy = randRange(-this.opts.coreOffset, this.opts.coreOffset);
+      const coreR = this.size * this.opts.coreScale;
+      const coreGrad = ctx.createRadialGradient(ox, oy, 0, ox, oy, coreR);
+      coreGrad.addColorStop(0,   `rgba(${cr},${cg},${cb},${(alpha * 0.5).toFixed(3)})`);
+      coreGrad.addColorStop(1.0, `rgba(${cr},${cg},${cb},0)`);
+      ctx.fillStyle = coreGrad;
       ctx.beginPath();
-      ctx.arc(
-        this.x + ox,
-        this.y + oy,
-        this.size * this.opts.coreScale,
-        0,
-        Math.PI * 2
-      );
+      ctx.arc(ox, oy, coreR, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    ctx.globalAlpha = 1;
+    ctx.restore(); // restores transform, shadowBlur, shadowColor automatically
   }
 }
 
@@ -435,7 +459,7 @@ class CloudSystem {
 
       // size is now a circle radius
       sizeMin: 2,
-      sizeMax: 5,
+      sizeMax: 25,
       alphaMin: 100,
       alphaMax: 180,
       speedMin: 0.5,
@@ -446,7 +470,7 @@ class CloudSystem {
       verticalDrift: 0.5,
 
       coreChance: 0.3,
-      coreOffset: 2,
+      coreOffset: 6,
       coreScale: 0.8,
     };
 
