@@ -3,14 +3,91 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Cloud Particles</title>
+    <title>Atmos Index</title>
     <style>
       html, body { margin: 0; height: 100%; background: #00020e; }
       canvas { width: 100%; height: 100%; display: block; }
+
+      /* ── Intro overlay ──────────────────────────────────────────────────── */
+      #intro {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10;
+        opacity: 1;
+        transition: opacity 1.4s ease;
+        pointer-events: auto;
+      }
+      #intro.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #intro-card {
+        background: rgba(0, 3, 20, 0.65);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border: 1px solid rgba(180, 210, 255, 0.08);
+        border-radius: 18px;
+        padding: 2.8rem 3.2rem 2.4rem;
+        max-width: 400px;
+        width: calc(100% - 3rem);
+        text-align: center;
+        font-family: system-ui, -apple-system, sans-serif;
+        user-select: none;
+      }
+      #intro-card h1 {
+        margin: 0 0 1.6rem;
+        font-size: 0.72rem;
+        font-weight: 400;
+        letter-spacing: 0.38em;
+        text-transform: uppercase;
+        color: rgba(200, 222, 255, 0.45);
+      }
+      #intro-card p {
+        margin: 0 0 0.85rem;
+        font-size: 0.92rem;
+        line-height: 1.75;
+        color: rgba(210, 228, 255, 0.78);
+        font-weight: 300;
+      }
+      #intro-card .hint {
+        margin: 1.2rem 0 2rem;
+        font-size: 0.86rem;
+        font-style: italic;
+        color: rgba(180, 205, 245, 0.52);
+        line-height: 1.6;
+      }
+      #intro-card .cta {
+        display: block;
+        font-size: 0.65rem;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.22);
+      }
     </style>
   </head>
   <body>
     <canvas id="c"></canvas>
+
+    <div id="intro" onclick="dismissIntro()">
+      <div id="intro-card">
+        <h1>Atmos Index</h1>
+        <p>The sky reflects your real local time — colors, sun position, and stars are all synced to your clock.</p>
+        <p>500 cloud particles drift on simulated wind, shifting in hue as daylight changes.</p>
+        <p class="hint">Move your cursor or drag on mobile to push the clouds.</p>
+        <span class="cta">click anywhere to begin</span>
+      </div>
+    </div>
+
+    <script>
+      function dismissIntro() {
+        document.getElementById('intro').classList.add('hidden');
+      }
+      setTimeout(dismissIntro, 6000);
+    </script>
+
     <script type="module" src="./main.js"></script>
   </body>
 </html>
